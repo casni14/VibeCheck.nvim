@@ -5,7 +5,7 @@ local apply_indent
 -- Cache for resuming sessions
 -- [buf_name] = { lines = {}, cursor = {}, elapsed = 0 }
 local progress_cache = {}
-local progress_cache_path = vim.fn.stdpath("state") .. "/vibecheck_progress.json"
+local progress_cache_path = vim.fn.stdpath("state") .. "/typecheck_progress.json"
 
 local function load_progress_cache()
   if vim.fn.filereadable(progress_cache_path) ~= 1 then return end
@@ -67,8 +67,8 @@ local state = {
   orig_win = nil,
   target_lines = {},
   hl_cache = {},
-  ns = api.nvim_create_namespace("VibeCheck"),
-  progress_ns = api.nvim_create_namespace("VibeCheckProgress"),
+  ns = api.nvim_create_namespace("TypeCheck"),
+  progress_ns = api.nvim_create_namespace("TypeCheckProgress"),
   stats = {
     accumulated_ms = 0,
     active_start = nil, -- nil means paused
@@ -92,10 +92,10 @@ local function set_highlights()
     end
   end
 
-  set_hl("VibeCheckDim", { link = "Comment" })
-  set_hl("VibeCheckCorrect", { link = "String" }) -- Fallback
-  set_hl("VibeCheckWrong", { link = "Error" })
-  set_hl("VibeCheckCursor", { bg = "#555555", fg = "#ffffff" })
+  set_hl("TypeCheckDim", { link = "Comment" })
+  set_hl("TypeCheckCorrect", { link = "String" }) -- Fallback
+  set_hl("TypeCheckWrong", { link = "Error" })
+  set_hl("TypeCheckCursor", { bg = "#555555", fg = "#ffffff" })
 end
 
 -- Helper to check if a line is a separator (repeating punctuation/symbols)
@@ -144,7 +144,7 @@ local function get_next_vibe_pos(start_row_0indexed, direction)
 end
 
 local function get_origin_hl(row, col)
-  if not state.orig_buf then return "VibeCheckCorrect" end
+  if not state.orig_buf then return "TypeCheckCorrect" end
   
   -- Try Treesitter
   local has_ts = false
@@ -176,7 +176,7 @@ local function get_origin_hl(row, col)
     return hl_name
   end
   
-  return "VibeCheckCorrect"
+  return "TypeCheckCorrect"
 end
 
 local function get_cached_hl(row, col)
@@ -202,7 +202,7 @@ local function render_line(row, user_line)
     if t_char == "" then
        -- User typed more than target
        local display = (u_char == " ") and "_" or u_char
-       table.insert(chunks, { display, "VibeCheckWrong" })
+       table.insert(chunks, { display, "TypeCheckWrong" })
     elseif u_char == t_char then
        correct_chars = correct_chars + 1
        local hl = get_cached_hl(row, i-1)
@@ -210,14 +210,14 @@ local function render_line(row, user_line)
     else
        -- Show what user typed in Red.
        local display = (u_char == " ") and "_" or u_char
-       table.insert(chunks, { display, "VibeCheckWrong" })
+       table.insert(chunks, { display, "TypeCheckWrong" })
     end
   end
   
   -- Remaining target text
   if #target_line > #user_line then
     local remaining = target_line:sub(#user_line + 1)
-    table.insert(chunks, { remaining, "VibeCheckDim" })
+    table.insert(chunks, { remaining, "TypeCheckDim" })
   end
   
   -- Update stats for this line
@@ -284,7 +284,7 @@ local function update_title(paused)
    end
    
    local status = paused and "PAUSED" or "WPM"
-   local title = string.format(" VibeCheck (%s: %d | Acc: %d%%) ", status, wpm, acc)
+   local title = string.format(" TypeCheck (%s: %d | Acc: %d%%) ", status, wpm, acc)
    api.nvim_win_set_config(state.win, { title = title })
 end
 
@@ -360,8 +360,8 @@ function M.start()
   state.buf = api.nvim_create_buf(false, true)
   api.nvim_buf_set_option(state.buf, 'bufhidden', 'wipe')
   api.nvim_buf_set_option(state.buf, 'buftype', 'acwrite')
-  api.nvim_buf_set_name(state.buf, "VibeCheck")
-  api.nvim_buf_set_option(state.buf, 'filetype', 'vibecheck')
+  api.nvim_buf_set_name(state.buf, "TypeCheck")
+  api.nvim_buf_set_option(state.buf, 'filetype', 'typecheck')
   
   -- Disable distractions (Autocompletion, Diagnostics, AI)
   if vim.diagnostic.enable then
@@ -422,7 +422,7 @@ function M.start()
     row = 2,
     style = 'minimal',
     border = 'rounded',
-    title = ' VibeCheck ',
+    title = ' TypeCheck ',
     title_pos = 'center',
   })
   
@@ -676,7 +676,7 @@ function M.save()
   persist_progress_cache()
   
   vim.bo[state.buf].modified = false
-  vim.notify("VibeCheck progress saved!", vim.log.levels.INFO)
+  vim.notify("TypeCheck progress saved!", vim.log.levels.INFO)
 end
 
 function M.cleanup()
@@ -753,7 +753,7 @@ function M.stats()
   table.sort(items, function(a, b) return a.name < b.name end)
 
   if #items == 0 then
-    vim.notify("VibeCheck: no saved sessions.", vim.log.levels.INFO)
+    vim.notify("TypeCheck: no saved sessions.", vim.log.levels.INFO)
     return
   end
 
@@ -786,7 +786,7 @@ function M.stats()
     manual_total_chars
   )
 
-  local lines = { " VibeCheck Stats ", manual_line, "" }
+  local lines = { " TypeCheck Stats ", manual_line, "" }
   for _, item in ipairs(items) do
     local totals = string.format("%d/%d", item.cursor_line, item.total_lines)
     local line = string.format(
@@ -803,7 +803,7 @@ function M.stats()
   local buf = api.nvim_create_buf(false, true)
   api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   api.nvim_buf_set_option(buf, "bufhidden", "wipe")
-  api.nvim_buf_set_option(buf, "filetype", "vibecheckstats")
+  api.nvim_buf_set_option(buf, "filetype", "typecheckstats")
 
   local width = 0
   for _, l in ipairs(lines) do
@@ -822,7 +822,7 @@ function M.stats()
     height = height,
     style = "minimal",
     border = "rounded",
-    title = " VibeCheck Stats ",
+    title = " TypeCheck Stats ",
     title_pos = "center",
   })
 

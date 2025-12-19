@@ -1,0 +1,35 @@
+*typecheck.txt*  Typing practice for your own code
+
+==============================================================================
+CONTENTS                                                   *typecheck-contents*
+
+Introduction                                               |typecheck-intro|
+Commands                                                   |typecheck-commands|
+Notes                                                      |typecheck-notes|
+
+==============================================================================
+INTRODUCTION                                                *typecheck-intro*
+
+TypeCheck.nvim lets you practice typing directly on the code you're reading.
+It opens a scratch buffer with ghost text from the current buffer and tracks
+WPM + accuracy as you type.
+
+==============================================================================
+COMMANDS                                                *typecheck-commands*
+
+:TypeCheck                                                     *:TypeCheck*
+        Start a typing session for the current buffer.
+
+:TypeCheckStats                                           *:TypeCheckStats*
+        Show saved session stats and Neovim manual progress.
+
+==============================================================================
+NOTES                                                     *typecheck-notes*
+
+Progress is stored in: >
+  stdpath("state")/typecheck_progress.json
+<
+Saved sessions resume at the next character.
+
+==============================================================================
+vim:tw=78:ft=help:norl:
