@@ -23,6 +23,53 @@ A plugin to practice your typing on code that actually matters: your own. Instea
 }
 ```
 
+Lazy.nvim loading styles:
+
+```lua
+-- Load immediately on startup
+{
+  "casni14/TypeCheck.nvim",
+  lazy = false,
+}
+
+-- Load on a generic event
+{
+  "casni14/TypeCheck.nvim",
+  event = "VeryLazy",
+}
+```
+
+## Installation (packer.nvim)
+
+```lua
+use({
+  "casni14/TypeCheck.nvim",
+  config = function()
+    require("typecheck").setup({
+      auto_skip_separators = true,
+    })
+  end,
+})
+```
+
+## Installation (vim-plug)
+
+```vim
+Plug 'casni14/TypeCheck.nvim'
+
+lua << EOF
+require("typecheck").setup({
+  auto_skip_separators = true,
+})
+EOF
+```
+
+## Installation (manual)
+
+```vim
+set rtp+=/path/to/TypeCheck.nvim
+```
+
 ## Usage
 
 Open any file you want to practice and run:
