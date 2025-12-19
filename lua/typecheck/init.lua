@@ -6,10 +6,14 @@ local apply_indent
 -- [buf_name] = { lines = {}, cursor = {}, elapsed = 0 }
 local progress_cache = {}
 local progress_cache_path = vim.fn.stdpath("state") .. "/typecheck_progress.json"
+local session_history = {}
 
 local default_config = {
   auto_skip_separators = true,
+  history_size = 200,
 }
+
+local state
 
 local function load_progress_cache()
   if vim.fn.filereadable(progress_cache_path) ~= 1 then return end
@@ -17,12 +21,22 @@ local function load_progress_cache()
   if not ok or not lines or #lines == 0 then return end
   local decoded_ok, decoded = pcall(vim.json.decode, table.concat(lines, "\n"))
   if decoded_ok and type(decoded) == "table" then
-    progress_cache = decoded
+    if decoded.progress and type(decoded.progress) == "table" then
+      progress_cache = decoded.progress
+      session_history = decoded.history or {}
+    else
+      progress_cache = decoded
+      session_history = {}
+    end
   end
 end
 
 local function persist_progress_cache()
-  local ok, encoded = pcall(vim.json.encode, progress_cache)
+  local payload = {
+    progress = progress_cache,
+    history = session_history,
+  }
+  local ok, encoded = pcall(vim.json.encode, payload)
   if not ok or not encoded then return end
   pcall(vim.fn.writefile, { encoded }, progress_cache_path)
 end
@@ -63,8 +77,18 @@ local function compute_stats_for(target_lines, typed_lines, elapsed_s)
   return wpm, acc
 end
 
+local function compute_elapsed_s()
+  if not state or not state.stats then return 0 end
+  local elapsed_ms = state.stats.accumulated_ms or 0
+  if state.stats.active_start then
+    elapsed_ms = elapsed_ms + (vim.uv.now() - state.stats.active_start)
+  end
+  if elapsed_ms < 0 then elapsed_ms = 0 end
+  return elapsed_ms / 1000
+end
+
 -- State
-local state = {
+state = {
   buf = nil,
   win = nil,
   orig_buf = nil,
@@ -82,6 +106,7 @@ local state = {
   },
   progress_mark_id = nil,
   config = vim.deepcopy(default_config),
+  session_recorded = false,
 }
 
 -- Highlights
@@ -413,6 +438,7 @@ function M.start()
     line_counts = {},
     timer = nil,
   }
+  state.session_recorded = false
 
   api.nvim_buf_set_lines(state.buf, 0, -1, false, start_lines)
   
@@ -646,6 +672,7 @@ function M.start()
   api.nvim_create_autocmd("BufWipeout", {
     buffer = state.buf,
     callback = function()
+      M.record_session()
       M.save({ notify = false })
       M.cleanup()
     end,
@@ -668,9 +695,9 @@ function M.save(opts)
   
   -- Calculate elapsed time to save
   if state.stats.active_start then
-      local burst = vim.uv.now() - state.stats.active_start
-      state.stats.accumulated_ms = state.stats.accumulated_ms + burst
-      state.stats.active_start = vim.uv.now() -- Reset burst start
+    local burst = vim.uv.now() - state.stats.active_start
+    state.stats.accumulated_ms = state.stats.accumulated_ms + burst
+    state.stats.active_start = vim.uv.now() -- Reset burst start
   end
   
   local elapsed = state.stats.accumulated_ms / 1000
@@ -687,6 +714,34 @@ function M.save(opts)
   if notify then
     vim.notify("TypeCheck progress saved!", vim.log.levels.INFO)
   end
+end
+
+function M.record_session()
+  if state.session_recorded then return end
+  if not state.orig_buf or not state.buf or not api.nvim_buf_is_valid(state.buf) then return end
+  if not state.target_lines or #state.target_lines == 0 then return end
+
+  local lines = api.nvim_buf_get_lines(state.buf, 0, -1, false)
+  local elapsed_s = compute_elapsed_s()
+  local wpm, acc = compute_stats_for(state.target_lines, lines, elapsed_s)
+  local correct, typed = compute_correct_typed(state.target_lines, lines)
+
+  local entry = {
+    ts = os.time(),
+    wpm = wpm,
+    acc = acc,
+    correct = correct,
+    typed = typed,
+    elapsed = elapsed_s,
+    file = api.nvim_buf_get_name(state.orig_buf),
+  }
+  table.insert(session_history, entry)
+  local limit = state.config.history_size or default_config.history_size
+  if limit and #session_history > limit then
+    table.remove(session_history, 1)
+  end
+
+  state.session_recorded = true
 end
 
 function M.cleanup()
@@ -716,8 +771,19 @@ function M.stats()
   local pct_width = 0
   local wpm_width = 0
   local acc_width = 0
+  local max_wpm = 0
+  local max_acc = 0
+  local any_complete = false
+  local total_sessions = 0
+  local total_elapsed_s = 0
+  local avg_wpm = "n/a"
+  local avg_acc = "n/a"
+  local total_correct_chars = 0
+  local total_typed_chars = 0
 
   for buf_name, cached in pairs(progress_cache) do
+    total_sessions = total_sessions + 1
+    total_elapsed_s = total_elapsed_s + (cached.elapsed or 0)
     local target_lines = nil
     if buf_name ~= "" and vim.fn.filereadable(buf_name) == 1 then
       local ok, lines = pcall(vim.fn.readfile, buf_name)
@@ -740,7 +806,13 @@ function M.stats()
       local calc_wpm, calc_acc = compute_stats_for(target_lines, cached.lines or {}, cached.elapsed or 0)
       wpm = tostring(calc_wpm)
       acc = tostring(calc_acc)
+      if calc_wpm > max_wpm then max_wpm = calc_wpm end
+      if calc_acc > max_acc then max_acc = calc_acc end
+      local correct, typed = compute_correct_typed(target_lines, cached.lines or {})
+      total_correct_chars = total_correct_chars + correct
+      total_typed_chars = total_typed_chars + typed
     end
+    if cursor_line >= total_lines then any_complete = true end
 
     local name = (buf_name ~= "" and buf_name) or "[No Name]"
     local name_label = vim.fn.fnamemodify(name, ":~")
@@ -796,7 +868,91 @@ function M.stats()
     manual_total_chars
   )
 
-  local lines = { " TypeCheck Stats ", manual_line, "" }
+  local function format_duration(seconds)
+    local total = math.floor(seconds or 0)
+    local mins = math.floor(total / 60)
+    local secs = total % 60
+    return string.format("%dm %ds", mins, secs)
+  end
+
+  local function format_wpm_trend(values)
+    if not values or #values == 0 then return "n/a" end
+    local levels = { " ", ".", ":", "-", "=", "+", "*", "#", "%", "@" }
+    local min_v = values[1]
+    local max_v = values[1]
+    for i = 2, #values do
+      if values[i] < min_v then min_v = values[i] end
+      if values[i] > max_v then max_v = values[i] end
+    end
+    local span = max_v - min_v
+    local out = {}
+    for i = 1, #values do
+      local idx = 1
+      if span > 0 then
+        local ratio = (values[i] - min_v) / span
+        idx = math.floor(ratio * (#levels - 1)) + 1
+      end
+      out[i] = levels[idx]
+    end
+    return table.concat(out, "")
+  end
+
+  local function ach_line(label, ok)
+    local mark = ok and "[x]" or "[ ]"
+    return string.format(" %s %s", mark, label)
+  end
+
+  if total_elapsed_s > 0 and total_correct_chars > 0 then
+    avg_wpm = tostring(math.floor((total_correct_chars / 5) / (total_elapsed_s / 60)))
+  end
+  if total_typed_chars > 0 then
+    avg_acc = tostring(math.floor((total_correct_chars / total_typed_chars) * 100))
+  end
+
+  local recent_wpm = {}
+  local history_count = #session_history
+  local history_start = math.max(1, history_count - 19)
+  for i = history_start, history_count do
+    local entry = session_history[i]
+    if entry and type(entry.wpm) == "number" then
+      table.insert(recent_wpm, entry.wpm)
+    end
+  end
+  local wpm_trend = format_wpm_trend(recent_wpm)
+
+  local summary = {
+    string.format(" Total sessions: %d ", total_sessions),
+    string.format(" Total time: %s ", format_duration(total_elapsed_s)),
+    string.format(" Average WPM: %s ", avg_wpm),
+    string.format(" Best WPM: %s ", max_wpm > 0 and tostring(max_wpm) or "n/a"),
+    string.format(" Average accuracy: %s%% ", avg_acc),
+    string.format(" Best accuracy: %s%% ", max_acc > 0 and tostring(max_acc) or "n/a"),
+    string.format(" WPM trend (last %d): %s ", #recent_wpm, wpm_trend),
+  }
+
+  local achievements = {
+    ach_line("First session saved", #items > 0),
+    ach_line("Complete a file", any_complete),
+    ach_line("Accuracy 90%+", max_acc >= 90),
+    ach_line("Accuracy 100%", max_acc >= 100),
+    ach_line("WPM 60+", max_wpm >= 60),
+    ach_line("WPM 80+", max_wpm >= 80),
+    ach_line("WPM 100+", max_wpm >= 100),
+    ach_line("Manual progress 25%+", manual_pct >= 25),
+    ach_line("Manual progress 50%+", manual_pct >= 50),
+    ach_line("Manual progress 100%", manual_pct >= 100),
+  }
+
+  local lines = { " TypeCheck Stats ", manual_line, "", " Summary " }
+  for _, line in ipairs(summary) do
+    table.insert(lines, line)
+  end
+  table.insert(lines, "")
+  table.insert(lines, " Achievements ")
+  for _, line in ipairs(achievements) do
+    table.insert(lines, line)
+  end
+  table.insert(lines, "")
   for _, item in ipairs(items) do
     local totals = string.format("%d/%d", item.cursor_line, item.total_lines)
     local line = string.format(

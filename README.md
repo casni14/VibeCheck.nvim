@@ -99,6 +99,7 @@ require("typecheck").setup({
 Options:
 
 - `auto_skip_separators` (boolean): skip lines made of repeating symbols while navigating.
+- `history_size` (number): max number of recent sessions to keep for stats trends.
 
 ## Help
 
