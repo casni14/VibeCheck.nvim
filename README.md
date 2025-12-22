@@ -116,4 +116,11 @@ Run `:h TypeCheck` after generating helptags (most plugin managers do this).
 
 - Progress is stored in `stdpath("state")/typecheck_progress.json`.
 - Saved sessions resume at the next character.
+- If the source file changes, progress is remapped line-by-line when possible.
 - The Neovim manual progress line aggregates your typing across `$VIMRUNTIME/doc/*.txt`.
+
+## TODO / Ideas
+
+- [ ] smart pairs positioning
+- [ ] repo detection and repo completion status
+- [ ] Make the stats interface look better.

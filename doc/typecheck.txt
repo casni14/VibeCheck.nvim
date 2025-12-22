@@ -41,6 +41,7 @@ Progress is stored in: >
   stdpath("state")/typecheck_progress.json
 <
 Saved sessions resume at the next character.
+If the source file changes, progress is remapped line-by-line when possible.
 
 Leading indentation is kept aligned with the source line by default; extra
 leading whitespace is stripped to prevent shifting the ghost text.

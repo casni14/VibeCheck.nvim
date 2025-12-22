@@ -1,6 +1,7 @@
 local M = {}
 local api = vim.api
 local apply_indent
+local progress = require("typecheck.progress")
 
 -- Cache for resuming sessions
 -- [buf_name] = { lines = {}, cursor = {}, elapsed = 0 }
@@ -607,16 +608,28 @@ function M.start()
 	local start_cursor = { 1, 0 }
 	local start_elapsed = 0
 
-	if cached and #cached.lines == #lines then
-		start_lines = cached.lines
-		start_cursor = cached.cursor
+	if cached then
 		start_elapsed = cached.elapsed or 0
 
-		local line_at_cursor = start_lines[start_cursor[1]] or ""
-		if start_cursor[2] < #line_at_cursor then
-			start_cursor = { start_cursor[1], start_cursor[2] + 1 }
+		local remapped = nil
+		if cached.target and type(cached.target) == "table" and cached.lines and #cached.target == #cached.lines then
+			remapped = progress.remap_progress(cached.target, lines, cached.lines, cached.cursor)
 		end
-	else
+
+		if remapped and remapped.lines then
+			start_lines = remapped.lines
+			if remapped.cursor then
+				start_cursor = remapped.cursor
+			end
+		elseif cached.lines and #cached.lines == #lines then
+			start_lines = cached.lines
+			if cached.cursor then
+				start_cursor = cached.cursor
+			end
+		end
+	end
+
+	if #start_lines == 0 then
 		for _ = 1, #lines do
 			table.insert(start_lines, "")
 		end
@@ -624,6 +637,18 @@ function M.start()
 		if #start_lines == 0 then
 			table.insert(start_lines, "")
 		end
+	end
+
+	if start_cursor[1] < 1 then
+		start_cursor[1] = 1
+	end
+	if start_cursor[1] > #start_lines then
+		start_cursor[1] = #start_lines
+	end
+
+	local line_at_cursor = start_lines[start_cursor[1]] or ""
+	if start_cursor[2] < #line_at_cursor then
+		start_cursor = { start_cursor[1], start_cursor[2] + 1 }
 	end
 
 	-- Init Stats
@@ -647,7 +672,7 @@ function M.start()
 	state.win = api.nvim_open_win(state.buf, true, {
 		relative = "editor",
 		width = width - 4,
-		height = height - 3,
+		height = height - 4,
 		col = 2,
 		row = 0,
 		style = "minimal",
@@ -930,6 +955,7 @@ function M.save(opts)
 		lines = lines,
 		cursor = cursor,
 		elapsed = elapsed,
+		target = state.target_lines,
 	}
 	persist_progress_cache()
 
@@ -1000,6 +1026,51 @@ end
 function M.stats()
 	load_progress_cache()
 
+	local function display_width(text)
+		return vim.fn.strdisplaywidth(text)
+	end
+
+	local function set_stats_highlights()
+		api.nvim_set_hl(0, "TypeCheckStatsTitle", { link = "Title" })
+		api.nvim_set_hl(0, "TypeCheckStatsDivider", { link = "Comment" })
+		api.nvim_set_hl(0, "TypeCheckStatsSection", { link = "Function" })
+		api.nvim_set_hl(0, "TypeCheckStatsLabel", { link = "Identifier" })
+		api.nvim_set_hl(0, "TypeCheckStatsValue", { link = "Number" })
+		api.nvim_set_hl(0, "TypeCheckStatsMuted", { link = "Comment" })
+		api.nvim_set_hl(0, "TypeCheckStatsFile", { link = "Directory" })
+		api.nvim_set_hl(0, "TypeCheckStatsProgress", { link = "Statement" })
+		api.nvim_set_hl(0, "TypeCheckStatsBarFill", { link = "DiffAdd" })
+		api.nvim_set_hl(0, "TypeCheckStatsBarEmpty", { link = "Comment" })
+		api.nvim_set_hl(0, "TypeCheckStatsAchieved", { link = "DiagnosticOk" })
+		api.nvim_set_hl(0, "TypeCheckStatsUnachieved", { link = "Comment" })
+	end
+
+	local function use_nerd_icons()
+		if vim.g.have_nerd_font == true or vim.g.nerd_font == true then
+			return true
+		end
+		local guifont = vim.o.guifont or ""
+		return guifont:lower():match("nerd") ~= nil
+	end
+
+	local nerd = use_nerd_icons()
+	local icons = {
+		overview = nerd and "󰋯 " or "",
+		manual = nerd and "󰈙 " or "",
+		achievements = nerd and "󰄬 " or "",
+		files = nerd and "󰈔 " or "",
+		sessions = nerd and "󰔟 " or "",
+		time = nerd and "󰅒 " or "",
+		today = nerd and "󰔠 " or "",
+		wpm = nerd and "󰓢 " or "",
+		acc = nerd and "󰓛 " or "",
+		trend = nerd and "󱎔 " or "",
+	}
+	local separators = {
+		divider = nerd and "═" or "=",
+		header = nerd and "─" or "-",
+	}
+
 	local items = {}
 	local name_width = 0
 	local totals_width = 0
@@ -1065,11 +1136,11 @@ function M.stats()
 
 		local name = (buf_name ~= "" and buf_name) or "[No Name]"
 		local name_label = vim.fn.fnamemodify(name, ":~")
-		name_width = math.max(name_width, #name_label)
-		totals_width = math.max(totals_width, #(tostring(cursor_line) .. "/" .. tostring(total_lines)))
-		pct_width = math.max(pct_width, #tostring(pct))
-		wpm_width = math.max(wpm_width, #tostring(wpm))
-		acc_width = math.max(acc_width, #tostring(acc))
+		name_width = math.max(name_width, display_width(name_label))
+		totals_width = math.max(totals_width, display_width(tostring(cursor_line) .. "/" .. tostring(total_lines)))
+		pct_width = math.max(pct_width, display_width(tostring(pct)))
+		wpm_width = math.max(wpm_width, display_width(tostring(wpm)))
+		acc_width = math.max(acc_width, display_width(tostring(acc)))
 
 		table.insert(items, {
 			name = name_label,
@@ -1233,13 +1304,18 @@ function M.stats()
 	end
 	local daily_goal_s = daily_goal_min * 60
 	local daily_goal_line = ""
+	local daily_goal_pct = 0
 	if daily_goal_min > 0 then
-		local pct = math.floor((active_today_s / daily_goal_s) * 100)
-		if pct < 0 then
-			pct = 0
+		daily_goal_pct = math.floor((active_today_s / daily_goal_s) * 100)
+		if daily_goal_pct < 0 then
+			daily_goal_pct = 0
 		end
-		daily_goal_line =
-			string.format(" Active today: %s (%d%% of %dm) ", format_duration(active_today_s), pct, daily_goal_min)
+		daily_goal_line = string.format(
+			" Active today: %s (%d%% of %dm) ",
+			format_duration(active_today_s),
+			daily_goal_pct,
+			daily_goal_min
+		)
 	else
 		daily_goal_line = string.format(" Active today: %s (goal off) ", format_duration(active_today_s))
 	end
@@ -1268,37 +1344,142 @@ function M.stats()
 		ach_line("Manual progress 100%", manual_pct >= 100),
 	}
 
-	local lines = { " TypeCheck Stats ", manual_line, "", " Summary " }
-	for _, line in ipairs(summary) do
-		table.insert(lines, line)
+	local function bar(pct, width)
+		if pct < 0 then
+			pct = 0
+		end
+		if pct > 100 then
+			pct = 100
+		end
+		local filled = math.floor((pct / 100) * width)
+		return "[" .. string.rep("#", filled) .. string.rep("-", width - filled) .. "]"
 	end
-	table.insert(lines, "")
-	table.insert(lines, " Achievements ")
-	for _, line in ipairs(achievements) do
-		table.insert(lines, line)
+
+	local function format_progress(item)
+		return string.format("%d/%d (%d%%)", item.cursor_line, item.total_lines, item.pct)
 	end
-	table.insert(lines, "")
+
+	local progress_width = 0
 	for _, item in ipairs(items) do
-		local totals = string.format("%d/%d", item.cursor_line, item.total_lines)
+		progress_width = math.max(progress_width, display_width(format_progress(item)))
+	end
+
+	local bar_width = 12
+	local goal_bar = ""
+	if daily_goal_min > 0 then
+		goal_bar = bar(daily_goal_pct, bar_width)
+	end
+	local divider_width = math.max(44, name_width + progress_width + bar_width + wpm_width + acc_width + 10)
+
+	local manual_line_clean = manual_line:gsub("^%s*", "")
+	local lines = {}
+	local line_meta = {}
+	local pad = "  "
+	local function push(line, kind, meta)
+		table.insert(lines, pad .. line)
+		line_meta[#lines] = { kind = kind, meta = meta }
+	end
+
+	push("", "spacer")
+	push(icons.overview .. "Overview", "section")
+	push(string.format("%sSessions: %d", icons.sessions, total_sessions), "overview")
+	push(string.format("%sActive time (all): %s", icons.time, format_duration(total_elapsed_s)), "overview")
+	push(
+		daily_goal_min > 0
+				and string.format(
+					"%sActive today: %s %s (%d%% of %dm)",
+					icons.today,
+					format_duration(active_today_s),
+					goal_bar,
+					daily_goal_pct,
+					daily_goal_min
+				)
+			or string.format("%sActive today: %s (goal off)", icons.today, format_duration(active_today_s)),
+		"overview"
+	)
+	push(
+		string.format("%sAverage WPM: %s  Best WPM: %s", icons.wpm, avg_wpm, max_wpm > 0 and tostring(max_wpm) or "n/a"),
+		"overview"
+	)
+	push(
+		string.format(
+			"%sAverage accuracy: %s%%  Best accuracy: %s%%",
+			icons.acc,
+			avg_acc,
+			max_acc > 0 and tostring(max_acc) or "n/a"
+		),
+		"overview"
+	)
+	push(string.format("%sWPM trend (last %d): %s", icons.trend, #recent_wpm, wpm_trend), "overview")
+	push("", "spacer")
+	push(icons.manual .. "TTFManual", "section")
+	push(manual_line_clean, "manual")
+	push("", "spacer")
+	push(icons.achievements .. "Achievements", "section")
+
+	local cleaned_achievements = {}
+	local ach_width = 0
+	for _, line in ipairs(achievements) do
+		local cleaned = line:gsub("^%s*", "")
+		ach_width = math.max(ach_width, display_width(cleaned))
+		table.insert(cleaned_achievements, cleaned)
+	end
+
+	for i = 1, #cleaned_achievements, 2 do
+		local left = cleaned_achievements[i]
+		local right = cleaned_achievements[i + 1]
+		if right then
+			local line = string.format("%-" .. ach_width .. "s  %s", left, right)
+			push(line, "achievement")
+		else
+			push(left, "achievement")
+		end
+	end
+
+	push("", "spacer")
+	push(icons.files .. "Files", "section")
+
+	local header = string.format(
+		"%-"
+			.. name_width
+			.. "s  %-"
+			.. progress_width
+			.. "s  %-"
+			.. (bar_width + 2)
+			.. "s  %"
+			.. wpm_width
+			.. "s  %"
+			.. acc_width
+			.. "s",
+		"File",
+		"Progress",
+		"Bar",
+		"WPM",
+		"Acc"
+	)
+	push(header, "files_header")
+	push(string.rep(separators.header, display_width(header)), "files_divider")
+
+	for _, item in ipairs(items) do
 		local line = string.format(
 			"%-"
 				.. name_width
+				.. "s  %-"
+				.. progress_width
+				.. "s  %-"
+				.. (bar_width + 2)
 				.. "s  %"
-				.. totals_width
-				.. "s  (%"
-				.. pct_width
-				.. "s%%)  WPM: %"
 				.. wpm_width
-				.. "s  Acc: %"
+				.. "s  %"
 				.. acc_width
-				.. "s%%",
+				.. "s",
 			item.name,
-			totals,
-			tostring(item.pct),
+			format_progress(item),
+			bar(item.pct, bar_width),
 			tostring(item.wpm),
 			tostring(item.acc)
 		)
-		table.insert(lines, line)
+		push(line, "file_row", { pct = item.pct })
 	end
 
 	local buf = api.nvim_create_buf(false, true)
@@ -1308,7 +1489,7 @@ function M.stats()
 
 	local width = 0
 	for _, l in ipairs(lines) do
-		width = math.max(width, #l)
+		width = math.max(width, display_width(l))
 	end
 	width = math.min(width + 2, math.floor(vim.o.columns * 0.9))
 	local height = math.min(#lines + 2, math.floor(vim.o.lines * 0.6))
@@ -1330,6 +1511,73 @@ function M.stats()
 	vim.wo[win].wrap = false
 	vim.wo[win].cursorline = true
 	vim.keymap.set("n", "q", ":q<CR>", { buffer = buf, noremap = true, silent = true })
+
+	set_stats_highlights()
+	for idx, line in ipairs(lines) do
+		local line_offset = 2
+		local kind = line_meta[idx] and line_meta[idx].kind or nil
+		local lnum = idx - 1
+		if kind == "title" then
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsTitle", lnum, 0, -1)
+		elseif kind == "divider" or kind == "files_divider" then
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsDivider", lnum, 0, -1)
+		elseif kind == "section" then
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsSection", lnum, 0, -1)
+		elseif kind == "overview" or kind == "manual" then
+			local pos = line_offset
+			while true do
+				local colon = line:find(":", pos + 1, true)
+				if not colon then
+					break
+				end
+				api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsLabel", lnum, pos, colon)
+				local value_start = colon + 2
+				local next_sep = line:find("  ", value_start, true) or (#line + 1)
+				api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsValue", lnum, value_start - 1, next_sep - 1)
+				pos = next_sep
+			end
+		elseif kind == "achievement" then
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsMuted", lnum, line_offset, -1)
+			local search_from = 1
+			while true do
+				local s, e = line:find("%[[x ]%]", search_from)
+				if not s then
+					break
+				end
+				local mark = line:sub(s, e)
+				if mark == "[x]" then
+					api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsAchieved", lnum, s - 1, e)
+				else
+					api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsUnachieved", lnum, s - 1, e)
+				end
+				search_from = e + 1
+			end
+		elseif kind == "files_header" then
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsSection", lnum, line_offset, -1)
+		elseif kind == "file_row" then
+			local col_file_start = line_offset
+			local col_file_end = line_offset + name_width
+			local col_progress_start = col_file_end + 2
+			local col_progress_end = col_progress_start + progress_width
+			local col_bar_start = col_progress_end + 2
+			local col_bar_end = col_bar_start + bar_width + 2
+			local col_wpm_start = col_bar_end + 2
+			local col_wpm_end = col_wpm_start + wpm_width
+			local col_acc_start = col_wpm_end + 2
+			local col_acc_end = col_acc_start + acc_width
+
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsFile", lnum, col_file_start, col_file_end)
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsProgress", lnum, col_progress_start, col_progress_end)
+
+			local pct = line_meta[idx] and line_meta[idx].meta and line_meta[idx].meta.pct or 0
+			local fill = math.floor((math.min(math.max(pct, 0), 100) / 100) * bar_width)
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsBarFill", lnum, col_bar_start, col_bar_start + 1 + fill)
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsBarEmpty", lnum, col_bar_start + 1 + fill, col_bar_end)
+
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsValue", lnum, col_wpm_start, col_wpm_end)
+			api.nvim_buf_add_highlight(buf, 0, "TypeCheckStatsValue", lnum, col_acc_start, col_acc_end)
+		end
+	end
 end
 
 return M
